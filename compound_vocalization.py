@@ -43,16 +43,25 @@ class MouseUSVDetector:
             return None, None
     #Again followed tutorial to create memory efficient spectrograms since it was killing my RAM in the first attempts
     def create_spectrogram_chunk(self, data, sample_rate):
-        """Create spectrogram with memory-efficient parameters"""
+        """
+        Create spectrogram with memory-efficient parameters.
+        Downsamples to 200 kHz if original rate is higher, preserving up to 100 kHz.
+        """
+        target_sr_downsample = 200000 # Target rate (preserves up to 100 kHz)
+        
         nperseg = int(sample_rate * 0.010) # 10ms windows
         noverlap = int(nperseg * 0.5) # 50% overlap
         
-        if sample_rate > 125000:
-            decimation_factor = int(sample_rate / 125000)
-            data = signal.decimate(data, decimation_factor, ftype='fir')
-            sample_rate = sample_rate // decimation_factor
-            nperseg = int(sample_rate * 0.010)
-            noverlap = int(nperseg * 0.5)
+        # Downsample if sample rate is higher than target AND significantly different
+        if sample_rate > target_sr_downsample and sample_rate > target_sr_downsample * 1.1: 
+            decimation_factor = int(round(sample_rate / target_sr_downsample))
+            if decimation_factor > 1:
+                print(f" (Downsampling from {sample_rate/1000:.0f}kHz to {sample_rate//decimation_factor/1000:.0f}kHz)", end='')
+                data = signal.decimate(data, decimation_factor, ftype='fir', zero_phase=True)
+                sample_rate = sample_rate // decimation_factor
+                # Recalculate nperseg/noverlap for the new sample rate
+                nperseg = int(sample_rate * 0.010)
+                noverlap = int(nperseg * 0.5)
         
         f, t, Sxx = signal.spectrogram(data, sample_rate, 
                                        nperseg=nperseg, 
@@ -229,9 +238,11 @@ class MouseUSVDetector:
     #Followed youtube tutorial and asked AI for debugging and logic checks on how to detect compound vocalizations
     def visualize_example_detections(self, filepath, data, sample_rate, all_syllables, 
                                      compounds, save_dir, num_examples=5):
-        
-        #Create spectrograms of example detected compounds for validation.
-        
+        """
+        Create spectrograms of example detected compounds for validation.
+        Dynamically sets plot frequency range based on detection settings.
+        Includes safety checks.
+        """
         
         if not compounds:
             print("  No compounds to visualize")
@@ -251,51 +262,45 @@ class MouseUSVDetector:
             padding = 0.2 
             start_time = max(0, compound['start_time'] - padding)
             end_time = min(len(data)/sample_rate, compound['end_time'] + padding)
-            
             start_sample = int(start_time * sample_rate)
             end_sample = int(end_time * sample_rate)
             segment = data[start_sample:end_sample]
 
-            # First safety check 
-            if segment.size == 0:
-                print(f"    Skipping example {idx+1}: Audio segment is empty.")
-                continue
+            if segment.size == 0: print(f"    Skipping example {idx+1}: Audio segment empty."); continue
 
             nperseg_viz = int(sample_rate * 0.003) 
             noverlap_viz = int(nperseg_viz * 0.9)
             segment_sr_viz = sample_rate
 
-            if sample_rate > 125000:
-                dec_factor = int(sample_rate / 125000)
-                # --- SAFETY CHECK #2 ---
-                if len(segment) > dec_factor * 10: 
-                    segment = signal.decimate(segment, dec_factor, ftype='fir')
+            target_sr_viz_downsample = 200000 # Match downsampling from detection
+            if sample_rate > target_sr_viz_downsample and sample_rate > target_sr_viz_downsample * 1.1:
+                dec_factor = int(round(sample_rate / target_sr_viz_downsample))
+                if dec_factor > 1 and len(segment) > dec_factor * 10: 
+                    segment = signal.decimate(segment, dec_factor, ftype='fir', zero_phase=True)
                     segment_sr_viz //= dec_factor
                     nperseg_viz = int(segment_sr_viz * 0.003)
                     noverlap_viz = int(nperseg_viz * 0.9)
-                else:
-                    print(f"    Skipping example {idx+1}: Audio segment too short for downsampling.")
-                    continue
-            
-            # Safety Check
-            if segment.size == 0:
-                print(f"    Skipping example {idx+1}: Audio segment became empty after processing.")
-                continue
+                elif len(segment) <= dec_factor * 10:
+                    print(f"    Skipping example {idx+1}: Segment too short for viz downsampling."); continue
+
+            if segment.size == 0: print(f"    Skipping example {idx+1}: Segment empty post-processing."); continue
 
             f, t, Sxx = signal.spectrogram(segment, segment_sr_viz, nperseg=nperseg_viz, noverlap=noverlap_viz, scaling='spectrum')
-            
-            # Safety check
-            if Sxx.size == 0:
-                print(f"    Skipping example {idx+1}: Spectrogram is empty.")
-                continue
+            if Sxx.size == 0: print(f"    Skipping example {idx+1}: Spectrogram empty."); continue
 
             Sxx_db = 10 * np.log10(Sxx + 1e-10)
             
             fig, axes = plt.subplots(2, 1, figsize=(14, 9))
-            freq_min_plot, freq_max_plot = (40, 80) if self.target_freq > 50000 else (20, 50)
             
+            # --- ⭐ DYNAMIC Y-LIMITS ⭐ ---
+            plot_freq_min = (self.target_freq - self.freq_tolerance) / 1000 - 5 # Add 5kHz padding
+            plot_freq_max = (self.target_freq + self.freq_tolerance) / 1000 + 5 # Add 5kHz padding
+            plot_freq_min = max(0, plot_freq_min) # Ensure min is not negative
+            plot_freq_max = min(segment_sr_viz / 2000, plot_freq_max) # Ensure max is not above Nyquist
+            # --- END DYNAMIC Y-LIMITS ---
+
             im1 = axes[0].pcolormesh(t + start_time, f/1000, Sxx_db, shading='gouraud', cmap='jet', vmin=np.percentile(Sxx_db, 20), vmax=np.percentile(Sxx_db, 99.5))
-            axes[0].set_ylim([freq_min_plot, freq_max_plot])
+            axes[0].set_ylim([plot_freq_min, plot_freq_max]) # Use dynamic limits
             axes[0].set_ylabel('Frequency (kHz)')
             axes[0].set_title(f'Example Compound {idx+1}: {compound["num_syllables"]} syllables, {compound["total_duration_ms"]:.1f}ms at {compound["start_time"]:.1f}s', fontsize=13, fontweight='bold')
             
@@ -308,27 +313,23 @@ class MouseUSVDetector:
             
             plt.colorbar(im1, ax=axes[0], label='Power (dB)')
             
-            zoom_range = 10
+            zoom_range_plot = 10 # Keep visual zoom range fixed for detail
             target_khz = self.target_freq / 1000
-            freq_zoom_mask = (f/1000 >= target_khz - zoom_range) & (f/1000 <= target_khz + zoom_range)
+            freq_zoom_mask = (f/1000 >= target_khz - zoom_range_plot) & (f/1000 <= target_khz + zoom_range_plot)
             
-            #Indexing block to prevent errors in data processing
             if np.any(freq_zoom_mask):
                 Sxx_zoom = Sxx_db[freq_zoom_mask, :]
                 f_zoom = f[freq_zoom_mask]
-                
                 if Sxx_zoom.ndim == 2 and Sxx_zoom.shape[0] > 0 and Sxx_zoom.shape[1] > 0:
                     im2 = axes[1].pcolormesh(t + start_time, f_zoom/1000, Sxx_zoom, shading='gouraud', cmap='jet', vmin=np.percentile(Sxx_zoom, 20), vmax=np.percentile(Sxx_zoom, 99.5))
                     plt.colorbar(im2, ax=axes[1], label='Power (dB)')
-                else:
-                    axes[1].text(0.5, 0.5, 'Error plotting zoomed region', ha='center', va='center', transform=axes[1].transAxes)
-            else:
-                axes[1].text(0.5, 0.5, 'No data in target zoom range', ha='center', va='center', transform=axes[1].transAxes)
+                else: axes[1].text(0.5, 0.5, 'Error plotting zoomed region', ha='center', va='center', transform=axes[1].transAxes)
+            else: axes[1].text(0.5, 0.5, 'No data in target zoom range', ha='center', va='center', transform=axes[1].transAxes)
             
-            axes[1].set_ylim([target_khz - zoom_range, target_khz + zoom_range])
+            axes[1].set_ylim([max(plot_freq_min, target_khz - zoom_range_plot), min(plot_freq_max, target_khz + zoom_range_plot)]) # Adjust zoom ylim too
             axes[1].set_ylabel('Frequency (kHz)')
             axes[1].set_xlabel('Time (s)')
-            axes[1].set_title(f'Zoomed: {target_khz} kHz Region')
+            axes[1].set_title(f'Zoomed: {target_khz:.0f} kHz Region')
             
             for syl_idx, syl in enumerate(compound['syllables']):
                 axes[1].axvline(syl['start_time'], color='lime', linewidth=2, alpha=0.8, label='Start' if syl_idx == 0 else "")
@@ -340,16 +341,13 @@ class MouseUSVDetector:
             if compound['syllables']: axes[1].legend(loc='upper right')
             
             plt.tight_layout()
-            
             save_path = os.path.join(save_dir, f"{os.path.splitext(os.path.basename(filepath))[0]}_example_{idx+1}.png")
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             plt.close()
-            
             saved_paths.append(save_path)
             print(f"    Saved example {idx+1}: {compound['num_syllables']} syllables")
         
         return saved_paths[0] if saved_paths else None
-    #Followed youtube tutorial on fixing summary plot errors and how to make one 
     def create_summary_plot(self, filepath, all_syllables, compounds, save_dir, duration):
         """Create a summary visualization"""
         fig, axes = plt.subplots(4, 1, figsize=(14, 12))
@@ -503,10 +501,10 @@ class MouseUSVDetector:
         
         return all_results
 
-#Trying to execute between 30-90kHz range but did not work 
+#Trying to execute between 30-90kHz range but did not work
 if __name__ == "__main__":
     print("="*70)
-    print("Sweep detection ")
+    print("MOUSE USV FREQUENCY SWEEP DETECTOR")
     print("="*70)
     
     target_freq = None
@@ -514,11 +512,11 @@ if __name__ == "__main__":
     
     while True:
         print("\nWhat is the target vocalization frequency range?")
-        print("  1. 20-40 kHz (Target: 30 kHz)")
-        print("  2. 50-70 kHz (Target: 60 kHz)")
-        print("  3. 60-80 kHz (Target: 70 kHz)")
-        print("  4.  30-90 kHz (Target: 60 kHz)") 
-        print("  5. Custom frequency")                     
+        print("  1. 20-40 kHz (Target: 30 kHz) - common for social")
+        print("  2. 50-70 kHz (Target: 60 kHz) - higher frequency (PROFESSOR'S RECOMMENDATION)")
+        print("  3. 60-80 kHz (Target: 70 kHz) - high frequency")
+        print("  4. ⭐ 30-90 kHz (Target: 60 kHz) - WIDE RANGE ⭐")
+        print("  5. Custom frequency")                             
         
         freq_choice = input("\nEnter choice (1-5) or press Enter for 60 kHz (50-70 range): ").strip()
         
@@ -533,17 +531,17 @@ if __name__ == "__main__":
                 freq_tolerance = 10000
                 freq_range = "60-80 kHz"
                 break
-            elif freq_choice == "4": # Logic for the new option
-                target_freq = 60000
-                freq_tolerance = 30000 # Sets the 30-90 kHz range
+            elif freq_choice == "4": # Logic for the 30-90 kHz option
+                target_freq = 60000    
+                freq_tolerance = 30000 # Correct: +/- 30 kHz
                 freq_range = "30-90 kHz"
                 break
-            elif freq_choice == "5":
+            elif freq_choice == "5": 
                 target_freq = float(input("Enter custom target frequency in kHz (e.g., 55): ")) * 1000
-                freq_tolerance = float(input("Enter frequency tolerance in kHz (e.g., 5 for +/- 5kHz): ")) * 1000
-                freq_range = f"{(target_freq - freq_tolerance)/1000}-{(target_freq + freq_tolerance)/1000} kHz"
+                freq_tolerance = float(input("Enter frequency tolerance in kHz (e.g., 10 for +/- 10kHz): ")) * 1000
+                freq_range = f"{(target_freq - freq_tolerance)/1000:.0f}-{(target_freq + freq_tolerance)/1000:.0f} kHz"
                 break
-            elif freq_choice == "" or freq_choice == "2":
+            elif freq_choice == "" or freq_choice == "2": # Default or explicit choice 2
                  target_freq = 60000
                  freq_tolerance = 10000
                  freq_range = "50-70 kHz"
@@ -553,59 +551,40 @@ if __name__ == "__main__":
         except ValueError:
             print("Invalid input. Please enter numbers only for custom frequency.")
 
-    print(f"Using target frequency: {target_freq/1000} kHz (Range: {freq_range})")
+    print(f"Using target frequency: {target_freq/1000:.0f} kHz (Range: {freq_range})")
 
-    # Execution blocks with regards to bandwidth and threshold and sensitivity
+    # --- Sensitivity Prompt ---
     print("\n" + "="*70)
     print("\nWhich detection sensitivity would you like?")
     print("  1. Lenient (threshold = 3.0 std) - detects more, may include noise")
     print("  2. Moderate (threshold = 4.0 std) - balanced")
     print("  3. Strict (threshold = 5.0 std) - fewer detections, higher confidence [RECOMMENDED]")
     print("  4. Custom threshold")
-    
     choice = input("\nEnter choice (1-4) or press Enter for Strict: ").strip()
-    
-    if choice == "1":
-        threshold = 3.0
-        print("Using LENIENT threshold: 3.0 std")
-    elif choice == "2":
-        threshold = 4.0
-        print("Using MODERATE threshold: 4.0 std")
+    # (Rest of sensitivity logic...)
+    if choice == "1": threshold = 3.0; print("Using LENIENT threshold: 3.0 std")
+    elif choice == "2": threshold = 4.0; print("Using MODERATE threshold: 4.0 std")
     elif choice == "4":
-        try:
-            threshold = float(input("Enter custom threshold (e.g., 4.5): "))
-            print(f"Using CUSTOM threshold: {threshold} std")
-        except:
-            threshold = 5.0
-            print("Invalid input. Using STRICT threshold: 5.0 std")
-    else: # Default is Strict
-        threshold = 5.0
-        print("Using STRICT threshold: 5.0 std")
-    
+        try: threshold = float(input("Enter custom threshold (e.g., 4.5): ")); print(f"Using CUSTOM threshold: {threshold} std")
+        except: threshold = 5.0; print("Invalid input. Using STRICT threshold: 5.0 std")
+    else: threshold = 5.0; print("Using STRICT threshold: 5.0 std")
+
+
+    # --- Bandwidth Prompt ---
     print("\n" + "="*70)
     print("\nFrequency sweep bandwidth (how much frequency modulation)?")
     print("  1. Standard (2-20 kHz) - typical mouse USVs [RECOMMENDED]")
     print("  2. Wide sweeps (5-20 kHz) - only large frequency changes")
     print("  3. Narrow sweeps (1-20 kHz) - include smaller frequency changes")
-    
     bw_choice = input("\nEnter choice (1-3) or press Enter for Standard: ").strip()
-    
-    if bw_choice == "2":
-        min_bw = 5000
-        max_bw = 20000
-        print("Using bandwidth range: 5-20 kHz (wide sweeps)")
-    elif bw_choice == "3":
-        min_bw = 1000
-        max_bw = 20000
-        print("Using bandwidth range: 1-20 kHz (narrow sweeps)")
-    else: # Default is Standard
-        min_bw = 2000
-        max_bw = 20000
-        print("Using bandwidth range: 2-20 kHz (standard)")
-    
+    # (Rest of bandwidth logic...)
+    if bw_choice == "2": min_bw = 5000; max_bw = 20000; print("Using bandwidth range: 5-20 kHz (wide sweeps)")
+    elif bw_choice == "3": min_bw = 1000; max_bw = 20000; print("Using bandwidth range: 1-20 kHz (narrow sweeps)")
+    else: min_bw = 2000; max_bw = 20000; print("Using bandwidth range: 2-20 kHz (standard)")
+
     print("\n" + "="*70 + "\n")
     
-    # Initialize the detector with chosen parameters
+    # Initialize detector
     detector = MouseUSVDetector(
         target_freq=target_freq,
         freq_tolerance=freq_tolerance,
@@ -618,18 +597,24 @@ if __name__ == "__main__":
         max_bandwidth_hz=max_bw
     )
     
-    # Process the folder
+    # Process folder
     folder_path = r"C:\Users\sushe\OneDrive\Desktop\delawarefiles"
     results = detector.process_folder(folder_path)
     
     # Final Summary
     print("\n" + "="*70)
     print("ANALYSIS COMPLETE!")
+    # (Rest of summary print statements...)
     print("="*70)
-    print(f"\nTarget frequency: {target_freq/1000} kHz ({freq_range})")
+    print(f"\nTarget frequency: {target_freq/1000:.0f} kHz ({freq_range})")
     print(f"Detection threshold: {threshold} std")
-    print(f"Bandwidth range: {min_bw/1000}-{max_bw/1000} kHz")
+    print(f"Bandwidth range: {min_bw/1000:.0f}-{max_bw/1000:.0f} kHz")
     print("\nCheck the output folder for:")
+    print("   - Summary plots showing all syllables and compounds")
+    print("   - Example spectrograms with WHITE FREQUENCY CONTOUR LINES")
+    print("   - Detailed text summary with sweep statistics")
+    print("\nThe white lines on spectrograms show the detected frequency sweeps!")
+    print("They should trace diagonal patterns like in your reference image.")
     print("\nIf detections don't match real vocalizations, try:")
     print("   - Different bandwidth range (wider or narrower)")
     print("   - Higher/lower threshold")
