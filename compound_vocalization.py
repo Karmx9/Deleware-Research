@@ -51,8 +51,7 @@ class MouseUSVDetector:
         
         nperseg = int(sample_rate * 0.010) # 10ms windows
         noverlap = int(nperseg * 0.5) # 50% overlap
-        
-        # Downsample if sample rate is higher than target AND significantly different
+        #Sample rate analysis
         if sample_rate > target_sr_downsample and sample_rate > target_sr_downsample * 1.1: 
             decimation_factor = int(round(sample_rate / target_sr_downsample))
             if decimation_factor > 1:
@@ -71,7 +70,7 @@ class MouseUSVDetector:
         Sxx_db = 10 * np.log10(Sxx + 1e-10)
         
         return f, t, Sxx_db, sample_rate
-    # Asked AI how to set up a detection logic for frequency sweeps with a coherence check
+    # Watched Tutorials on how to set up a detection logic for frequency sweeps with a coherence check
     def detect_frequency_sweeps(self, f, t, Sxx_db):
        
         
@@ -167,7 +166,7 @@ class MouseUSVDetector:
             })
         
         return syllables, Sxx_band, threshold
-    #Detection Logic for compound vocalizations
+    #Detection Logic for compound vocalizations. This may have been where the code is going wrong for the 30-90 khz but not entirely sure. 
     def identify_compounds(self, syllables):
         if len(syllables) < 2:
             return []
@@ -235,14 +234,10 @@ class MouseUSVDetector:
             del f, t, Sxx_db, chunk_data
         
         return all_syllables
-    #Followed youtube tutorial and asked AI for debugging and logic checks on how to detect compound vocalizations
+    #Read the research paper that you had sent me and came up with my own definitions to how a compound vocalization can be detected
     def visualize_example_detections(self, filepath, data, sample_rate, all_syllables, 
                                      compounds, save_dir, num_examples=5):
-        """
-        Create spectrograms of example detected compounds for validation.
-        Dynamically sets plot frequency range based on detection settings.
-        Includes safety checks.
-        """
+         # Loaded spectrograms while ensuring safety checks to ensure maximum effienecy and minimizing lost time. 
         
         if not compounds:
             print("  No compounds to visualize")
@@ -292,13 +287,13 @@ class MouseUSVDetector:
             
             fig, axes = plt.subplots(2, 1, figsize=(14, 9))
             
-            # --- ⭐ DYNAMIC Y-LIMITS ⭐ ---
+            
             plot_freq_min = (self.target_freq - self.freq_tolerance) / 1000 - 5 # Add 5kHz padding
             plot_freq_max = (self.target_freq + self.freq_tolerance) / 1000 + 5 # Add 5kHz padding
             plot_freq_min = max(0, plot_freq_min) # Ensure min is not negative
             plot_freq_max = min(segment_sr_viz / 2000, plot_freq_max) # Ensure max is not above Nyquist
-            # --- END DYNAMIC Y-LIMITS ---
-
+            
+            # Using previously stated dynamic limits from above for efficient plotting
             im1 = axes[0].pcolormesh(t + start_time, f/1000, Sxx_db, shading='gouraud', cmap='jet', vmin=np.percentile(Sxx_db, 20), vmax=np.percentile(Sxx_db, 99.5))
             axes[0].set_ylim([plot_freq_min, plot_freq_max]) # Use dynamic limits
             axes[0].set_ylabel('Frequency (kHz)')
@@ -348,6 +343,7 @@ class MouseUSVDetector:
             print(f"    Saved example {idx+1}: {compound['num_syllables']} syllables")
         
         return saved_paths[0] if saved_paths else None
+    # Followed another tutorial on summary plots to better visualize where the compound vocalizations are being clustered
     def create_summary_plot(self, filepath, all_syllables, compounds, save_dir, duration):
         """Create a summary visualization"""
         fig, axes = plt.subplots(4, 1, figsize=(14, 12))
@@ -388,7 +384,7 @@ class MouseUSVDetector:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved summary plot: {save_path}")
-
+    # Loading folder for sleekness of execution
     def process_folder(self, folder_path, output_dir=None):
         """Process all WAV files in folder"""
         if output_dir is None:
@@ -515,7 +511,7 @@ if __name__ == "__main__":
         print("  1. 20-40 kHz (Target: 30 kHz) - common for social")
         print("  2. 50-70 kHz (Target: 60 kHz) - higher frequency (PROFESSOR'S RECOMMENDATION)")
         print("  3. 60-80 kHz (Target: 70 kHz) - high frequency")
-        print("  4. ⭐ 30-90 kHz (Target: 60 kHz) - WIDE RANGE ⭐")
+        print("  4.  30-90 kHz (Target: 60 kHz) ")
         print("  5. Custom frequency")                             
         
         freq_choice = input("\nEnter choice (1-5) or press Enter for 60 kHz (50-70 range): ").strip()
@@ -533,7 +529,7 @@ if __name__ == "__main__":
                 break
             elif freq_choice == "4": # Logic for the 30-90 kHz option
                 target_freq = 60000    
-                freq_tolerance = 30000 # Correct: +/- 30 kHz
+                freq_tolerance = 30000 # +/- 30 kHz
                 freq_range = "30-90 kHz"
                 break
             elif freq_choice == "5": 
@@ -541,7 +537,7 @@ if __name__ == "__main__":
                 freq_tolerance = float(input("Enter frequency tolerance in kHz (e.g., 10 for +/- 10kHz): ")) * 1000
                 freq_range = f"{(target_freq - freq_tolerance)/1000:.0f}-{(target_freq + freq_tolerance)/1000:.0f} kHz"
                 break
-            elif freq_choice == "" or freq_choice == "2": # Default or explicit choice 2
+            elif freq_choice == "" or freq_choice == "2": # Default choice 
                  target_freq = 60000
                  freq_tolerance = 10000
                  freq_range = "50-70 kHz"
